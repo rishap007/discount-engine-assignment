@@ -8,11 +8,12 @@
  *
  * DiscountRule {
  *   ruleId:    string       — e.g. "RULE-01"
- *   scope:     "brand" | "platform"
+ *   scope:     "brand" | "platform" | "cart"
  *   appliesTo: string       — e.g. "Natura Casa", "Amazon India"
  *   type:      "percentage" | "flat"
  *   value:     number       — percentage as integer (15 = 15%), flat in rupees
  *   stackable: boolean
+ *   minCartValue?: number  — required for cart rules, in rupees
  * }
  *
  * CartItem {
@@ -57,10 +58,10 @@ export function ruleMatchesItem(item, rule) {
  */
 export function calculateDiscountAmount(price, rule) {
   if (rule.type === 'percentage') {
-    return Math.round(price * rule.value / 100)
+    return Math.min(price, Math.round(price * rule.value / 100))
   }
   if (rule.type === 'flat') {
-    return rule.value
+    return Math.min(price, rule.value)
   }
   return 0
 }
@@ -68,13 +69,14 @@ export function calculateDiscountAmount(price, rule) {
 /**
  * Builds the customer-facing reasoning string for an applied rule.
  */
-function ruleToReasoning(rule) {
+function ruleToReasoning(rule, amount) {
   const scopeLabel = rule.scope === 'brand' ? 'Brand' : 'Platform'
   if (rule.type === 'percentage') {
     return `${scopeLabel} offer: ${rule.value}% off`
   }
   if (rule.type === 'flat') {
-    return `${scopeLabel} offer: Rs.${rule.value} off`
+    const capped = amount < rule.value ? ` (Rs.${amount} applied)` : ''
+    return `${scopeLabel} offer: Rs.${rule.value} off${capped}`
   }
   return `${scopeLabel} offer applied`
 }
@@ -131,15 +133,17 @@ export function applyDiscounts(item, rules) {
   const reasoningParts = []
 
   if (winner) {
-    price -= calculateDiscountAmount(price, winner)
+    const amount = calculateDiscountAmount(price, winner)
+    price -= amount
     appliedRules.push(winner.ruleId)
-    reasoningParts.push(ruleToReasoning(winner))
+    reasoningParts.push(ruleToReasoning(winner, amount))
   }
 
   for (const rule of stackable) {
-    price -= calculateDiscountAmount(price, rule)
+    const amount = calculateDiscountAmount(price, rule)
+    price -= amount
     appliedRules.push(rule.ruleId)
-    reasoningParts.push(ruleToReasoning(rule))
+    reasoningParts.push(ruleToReasoning(rule, amount))
   }
 
   const finalPrice = Math.round(price)
@@ -171,4 +175,22 @@ export function processCart(cartItems, rules) {
  */
 export function cartTotal(results) {
   return results.reduce((sum, r) => sum + r.finalPrice, 0)
+}
+
+/** Prices items first, then applies the eligible cart offer with the largest saving. */
+export function priceCart(cartItems, rules) {
+  const items = processCart(cartItems, rules)
+  const subtotal = cartTotal(items)
+  let cartOffer = null
+
+  for (const rule of rules) {
+    if (rule.scope !== 'cart' || rule.minCartValue == null || subtotal < rule.minCartValue) continue
+
+    const savings = calculateDiscountAmount(subtotal, rule)
+    if (!cartOffer || savings > cartOffer.savings) {
+      cartOffer = { ruleId: rule.ruleId, percentage: rule.value, savings }
+    }
+  }
+
+  return { items, subtotal, cartOffer, finalTotal: subtotal - (cartOffer?.savings ?? 0) }
 }
