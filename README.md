@@ -2,6 +2,8 @@
 
 A checkout prototype with item and cart discounts, plain-English rule creation, and CSV or PDF cart import.
 
+[Live demo](https://opptra-discount-engine.vercel.app)
+
 ## Running locally
 
 Use Node.js 22.13 or later in the 22.x series, or Node.js 24.x. For plain-English
@@ -23,8 +25,8 @@ npm run build
 On Vercel, import the full repository. The Vite build produces `dist/`, and
 `api/parse-rule.js` deploys alongside it as a function. Set `GEMINI_API_KEY` in
 the project's server-side environment and optionally set `GEMINI_MODEL`. The
-function keeps the provider key on the server and only receives the offer
-description. Add the verified live URL here before submission.
+function keeps the provider key on the server and sends only the offer
+description to Gemini.
 
 ## How to use
 
