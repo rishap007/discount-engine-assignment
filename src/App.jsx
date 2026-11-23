@@ -5,19 +5,20 @@
  * Wires together CSV upload → parse → engine → display.
  */
 
-import { useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import CsvUploader from './components/CsvUploader.jsx'
 import DataTable from './components/DataTable.jsx'
 import ErrorBanner from './components/ErrorBanner.jsx'
+import RuleComposer from './components/RuleComposer.jsx'
 import { parseRulesCSV, parseCartCSV } from './engine/csvParser.js'
-import { processCart, cartTotal } from './engine/discountEngine.js'
+import { priceCart } from './engine/discountEngine.js'
 
 // ── Column definitions ───────────────────────────────────────────
 
 const RULES_COLUMNS = [
   { key: 'ruleId',    label: 'Rule ID' },
   { key: 'scope',     label: 'Scope',      render: (v) => v.charAt(0).toUpperCase() + v.slice(1) },
-  { key: 'appliesTo', label: 'Applies To' },
+  { key: 'appliesTo', label: 'Applies To', render: (v, row) => row.scope === 'cart' ? 'Entire cart' : v },
   { key: 'type',      label: 'Type',       render: (v) => v.charAt(0).toUpperCase() + v.slice(1) },
   {
     key: 'value',
@@ -25,6 +26,7 @@ const RULES_COLUMNS = [
     render: (v, row) => row.type === 'percentage' ? `${v}% off` : `Rs.${v} off`,
   },
   { key: 'stackable', label: 'Stackable',  render: (v) => (v ? 'Yes' : 'No') },
+  { key: 'minCartValue', label: 'Minimum Cart Value', render: (v) => v == null ? '—' : `Rs.${v.toLocaleString('en-IN')}` },
 ]
 
 const CART_COLUMNS = [
@@ -96,6 +98,7 @@ const S = {
   },
   totalLabel: { fontWeight: 700, fontSize: 14, color: '#131A48' },
   totalValue: { fontWeight: 700, fontSize: 16, color: '#131A48' },
+  cartOffer: { textAlign: 'right', marginTop: '0.75rem', fontWeight: 600, color: '#1e5c2c' },
   tag: (color, bg) => ({
     display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '1px 6px',
     borderRadius: 20, background: bg, color, textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -112,8 +115,14 @@ export default function App() {
   const [cartItems, setCartItems]   = useState([])
   const [cartErrors, setCartErrors] = useState([])
   const [cartFileName, setCartFileName]   = useState('')
+  const [cartLoading, setCartLoading] = useState(false)
+  const cartUpload = useRef(0)
 
-  const [results, setResults]       = useState(null)
+  const [showResults, setShowResults] = useState(false)
+  const results = useMemo(
+    () => showResults ? priceCart(cartItems, rules) : null,
+    [showResults, cartItems, rules],
+  )
 
   // ── Handlers ──
 
@@ -122,20 +131,55 @@ export default function App() {
     setRules(data)
     setRulesErr(errors)
     setRulesFileName(fileName)
-    setResults(null) // clear stale results
+    setShowResults(false)
   }
 
-  function handleCartLoad(csvText, fileName) {
-    const { data, errors } = parseCartCSV(csvText)
-    setCartItems(data)
-    setCartErrors(errors)
-    setCartFileName(fileName)
-    setResults(null)
+  async function handleCartFile(file) {
+    const upload = ++cartUpload.current
+    setCartLoading(true)
+    setCartErrors([])
+    const extension = file.name.split('.').at(-1).toLowerCase()
+
+    try {
+      if (extension === 'pdf') {
+        const { readPdfCart } = await import('./cart/readPdfCart.js')
+        const items = await readPdfCart(file)
+        if (upload !== cartUpload.current) return
+        setCartItems(items)
+        setShowResults(true)
+      } else if (extension === 'csv') {
+        const { data, errors } = parseCartCSV(await file.text())
+        if (upload !== cartUpload.current) return
+        setCartItems(data)
+        setCartErrors(errors)
+        setShowResults(false)
+      } else {
+        throw new Error('Choose a cart CSV or a text-based cart PDF.')
+      }
+      setCartFileName(file.name)
+    } catch (error) {
+      if (upload === cartUpload.current) setCartErrors([error.message])
+    } finally {
+      if (upload === cartUpload.current) setCartLoading(false)
+    }
   }
 
   function handleCalculate() {
-    const res = processCart(cartItems, rules)
-    setResults(res)
+    setShowResults(true)
+  }
+
+  function handleRuleConfirm(proposal) {
+    let sequence = rules.length + 1
+    const ruleIds = new Set(rules.map(({ ruleId }) => ruleId))
+    while (ruleIds.has(`RULE-NL-${sequence}`)) sequence++
+
+    const { appliesTo, minCartValue, ...fields } = proposal
+    const rule = { ...fields, ruleId: `RULE-NL-${sequence}`, appliesTo: appliesTo?.trim() ?? '' }
+    if (minCartValue !== null) rule.minCartValue = minCartValue
+
+    const activeRules = [...rules, rule]
+    setRules(activeRules)
+    if (cartItems.length > 0) setShowResults(true)
   }
 
   const canCalculate = rules.length > 0 && cartItems.length > 0
@@ -179,12 +223,14 @@ export default function App() {
           <div style={S.section}>
             <div style={S.sectionTitle}>Cart Items</div>
             <CsvUploader
-              label="cart.csv"
-              description="Upload your cart CSV"
-              onLoad={handleCartLoad}
+              label="Cart file (CSV or PDF)"
+              description="Upload your cart file"
+              accept=".csv,.pdf"
+              onFile={handleCartFile}
               hasData={cartItems.length > 0}
               fileName={cartFileName}
             />
+            {cartLoading && <p role="status">Reading cart file…</p>}
             <ErrorBanner errors={cartErrors} />
             {cartItems.length > 0 && (
               <div style={{ marginTop: '0.75rem' }}>
@@ -195,6 +241,11 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
+
+        <div style={S.section}>
+          <div style={S.sectionTitle}>Add a discount rule</div>
+          <RuleComposer onConfirm={handleRuleConfirm} />
         </div>
 
         {/* Calculate button */}
@@ -208,7 +259,7 @@ export default function App() {
           </button>
           {!canCalculate && (
             <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>
-              Upload both files to calculate
+              Add a discount rule and upload a cart to calculate
             </div>
           )}
         </div>
@@ -217,10 +268,18 @@ export default function App() {
         {results && (
           <div style={S.section}>
             <div style={S.sectionTitle}>Cart Summary</div>
-            <DataTable columns={RESULTS_COLUMNS} rows={results} />
+            <DataTable columns={RESULTS_COLUMNS} rows={results.items} />
+            {results.cartOffer && (
+              <div style={S.cartOffer}>
+                <div>Subtotal: Rs.{results.subtotal.toLocaleString('en-IN')}</div>
+                <div>
+                  Cart offer: {results.cartOffer.percentage}% off — Rs.{results.cartOffer.savings.toLocaleString('en-IN')} saved
+                </div>
+              </div>
+            )}
             <div style={S.totalRow}>
               <span style={S.totalLabel}>Cart Total</span>
-              <span style={S.totalValue}>Rs.{cartTotal(results).toLocaleString('en-IN')}</span>
+              <span style={S.totalValue}>Rs.{results.finalTotal.toLocaleString('en-IN')}</span>
             </div>
           </div>
         )}
